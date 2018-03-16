@@ -1,0 +1,336 @@
+---
+title: "Condensation BulkAnnotations"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+This notebook shows ...
+
+* how to access/browse the data on an OMERO server.
+* how to load and work with the meta data which can be attached to OME objects.
+* how to request and plot thumbnails.
+
+It uses the data from [idr0002-heriche-condensation/screenA](http://idr.openmicroscopy.org/webclient/?show=screen-102) (see article [Integration of biological data by kernels on graph nodes allows prediction of new genes involved in mitotic chromosome condensation](http://www.molbiolcell.org/content/25/16/2522)) which is hosted on [IDR](http://idr.openmicroscopy.org/).
+
+*  Article is about a software for predicting functional relationships of genes.
+* The screen is the experimental validation of 100 predicted novel candidate genes involved in mitotic chromosome condensation.
+* RNA interference: 2 siRNA per gene with 4 replicates, i.e. 8 samples per gene.
+* Screen with 12 96-Well plates, 2 channel timelapse images with 329 time points at 8.5 min
+* Authors measured length of prophase (CellCognition), calculated a 'Short' and a 'Long' prophase score.
+* 'Short'/'Long' prophase score > threshold --> 'Short'/'Long' prophase phenotype. More than two Short or Long phenotype replicates --> Gene is involved in mitotic chromosome condensation
+
+The notebook only accesses this data, make some plots, etc. to show how one can interact with OMERO from R. The notebook does not re-analyse the study.
+
+
+Load the [romero-gateway](https://github.com/ome/rOMERO-gateway) library:
+
+```{r warning=FALSE}
+library(romero.gateway)
+```
+
+```{r include=FALSE}
+user <- 'xxx'
+pass <- 'xxx'
+``` 
+
+Connect to the OMERO server:
+```{r}
+server <- OMEROServer(host = 'idr.openmicroscopy.org', username = user, password = pass, port = as.integer('4064'))
+ome <- connect(server)
+```
+
+# Example 1: Access/Browse data
+
+## Search and load the 'heriche-condensation' screen:
+```{r}
+searchResult <- searchFor(ome, Screen, 'Name', '"idr0002-heriche-condensation/screenA"')
+screen <- searchResult[[1]]
+print(screen@dataobject$getName())
+```
+
+## 'Browse' through the data:
+For example load some plates, wells, etc. (You can do the same with Projects/Datasets hierarchy accordingly)
+```{r}
+plates <- getPlates(screen)
+plate1 <- plates[[1]]
+plate2 <- plates[[2]]
+
+wells <- getWells(plate1)
+well <- wells[[1]]
+
+print(plate1@dataobject$getName())
+print(plate2@dataobject$getName())
+print(paste('Well:', well@dataobject$getColumn(), ',', well@dataobject$getRow()))
+```
+
+# Example 2: Working with the meta data
+
+## Get information about the meta data attached to the screen
+We are particularily interested in the file id of the 'bulk_annotations' file which is necessary for loading the meta data.
+```{r}
+annos <- getAnnotations(ome, 'ScreenData', getOMEROID(screen), nameFilter = 'bulk_annotations')
+annotationFileID = as.integer(annos$FileID)
+print(annotationFileID)
+```
+
+
+As the 'bulk_annotations' file is an HDF file, we can request its content directly as R dataframe. Keep in mind that it could be a huge table and only request the data you need. The loadDataframe method provides ways to perform a query or only load specific rows/columns of the table. 
+
+But first get a summary of its content:
+```{r R.options=list(max.print=20)}
+describeDataframe(screen, annotationFileID)
+```
+
+## Get data matching a certain condition
+E. g. load data for plate 1:
+```{r}
+condition <- paste0('(Plate==',getOMEROID(plate1),')')
+df1 <- loadDataframe(screen, annotationFileID, condition = condition)
+nrow(df1)
+```
+
+## Load specific columns
+Only load the data we're interested in (the bulk_annotations table can be huge), in that case Plate, Well, Gene, siRNA, Control, Quality Control, Short Prophase Score, Long Prophase Score, Short Prophase and Long Prophase reproducibility:
+```{r}
+# Only load first row, we're just interested in the column headers
+tmp <- loadDataframe(screen, annotationFileID, rowFrom = 1, rowTo = 1)
+
+# Specify which columns to load
+cols <- which(names(tmp) == "Plate")
+cols <- c(cols, which(names(tmp) == "Well"))
+cols <- c(cols, which(names(tmp) == "Well Name"))
+cols <- c(cols, which(names(tmp) == "Gene Symbol"))
+cols <- c(cols, which(names(tmp) == "siRNA Identifier"))
+cols <- c(cols, which(names(tmp) == "Control Type"))
+cols <- c(cols, which(names(tmp) == "Quality Control"))
+cols <- c(cols, which(names(tmp) == "Median Deviation Fraction - Shorter Prophase"))
+cols <- c(cols, which(names(tmp) == "Median Deviation Fraction - Longer Prophase"))
+cols <- c(cols, which(names(tmp) == "Phenotype Reproducibility - Shorter Prophase"))
+cols <- c(cols, which(names(tmp) == "Phenotype Reproducibility - Longer Prophase"))
+
+df3 <- loadDataframe(screen, annotationFileID, columns = cols)
+```
+
+Do some reformatting again and display a subset of rows:
+```{r}
+# Replace the long column names with shorter ones
+names(df3)[names(df3) == 'Plate'] <- 'plateID'
+names(df3)[names(df3) == 'Well'] <- 'wellID'
+names(df3)[names(df3) == 'Well Name'] <- 'well'
+names(df3)[names(df3) == 'Control Type'] <- 'control'
+names(df3)[names(df3) == 'siRNA Identifier'] <- 'siRNA'
+names(df3)[names(df3) == 'Gene Symbol'] <- 'gene'
+names(df3)[names(df3) == 'Quality Control'] <- 'qc'
+names(df3)[names(df3) == 'Median Deviation Fraction - Shorter Prophase'] <- 'devShort'
+names(df3)[names(df3) == 'Median Deviation Fraction - Longer Prophase'] <- 'devLong'
+names(df3)[names(df3) == 'Phenotype Reproducibility - Shorter Prophase'] <- 'repShort'
+names(df3)[names(df3) == 'Phenotype Reproducibility - Longer Prophase'] <- 'repLong'
+
+# Reformat the data, e.g. replace empty data with NA
+df3$siRNA[ df3$siRNA == "" ] <- NA
+df3$gene[ df3$gene == "" ] <- NA
+df3[ df3 == "positive control" ] <- 'positive'
+df3[ df3 == "negative control" ] <- 'negativ'
+df3$control[ df3$control == "" ] <- 'no'
+df3$control[ df3$control == "empty well" ] <- NA
+df3[ df3 == "not available" ] <- NA
+df3$devShort[ df3$devShort == "" ] <- 0
+df3$devLong[ df3$devLong == "" ] <- 0
+df3$plateID <- gsub('omero\\.gateway\\.model\\.PlateData \\(id=', "", df3$plateID)
+df3$plateID <- gsub('\\)', "", df3$plateID)
+df3$wellID <- gsub('omero\\.gateway\\.model\\.WellSampleData \\(id=', "", df3$wellID)
+df3$wellID <- gsub('\\)', "", df3$wellID)
+
+# Set the correct data type
+df3$control <- as.factor(as.character(df3$control))
+df3$siRNA <- as.factor(as.character(df3$siRNA))
+df3$gene <- as.factor(as.character(df3$gene))
+df3$devShort <- as.numeric(as.character(df3$devShort))
+df3$devLong <- as.numeric(as.character(df3$devLong))
+df3$repShort <- as.numeric(substr(as.character(df3$repShort), 1, 1))
+df3$repLong <- as.numeric(substr(as.character(df3$repLong), 1, 1))
+df3$qc <- as.factor(as.character(df3$qc))
+df3$well <- as.factor(as.character(df3$well))
+
+df3[1:9,]
+```
+
+## Do some analysis
+You can request some basic information about the screen, e. g. how many controls and samples there are ('control == no' means sample), how many samples per gene, etc.:
+```{r}
+library(plyr)
+count (df3$control)
+```
+
+```{r}
+rows = 50
+display_transpose <- function(df, rows){
+transpose = t(df[1:rows, 2:ncol(df)])
+colnames(transpose) <- df[1:rows,1]
+transpose
+}
+
+count_frame = as.data.frame(count (df3$gene))
+display_transpose(count_frame, rows)
+```
+
+Some quality assessment:
+
+* Is there a relationship between quality control and well position?
+```{r}
+part_table = as.data.frame(table(df3$well, df3$qc))
+display_transpose(part_table, rows)
+
+chisq.test(df3$qc, df3$well)
+```
+
+```{r}
+library(ggplot2)
+fails <- as.data.frame(table(df3$well, df3$qc))
+fails <- subset(fails, fails$Var2 == 'fail')
+fails$Freq <- fails$Freq / 12 * 100
+p <- ggplot(fails, aes(x = fails$Var1, y = fails$Freq))
+p <- p + geom_bar(stat="identity")
+p <- p + labs(y = "QC Fail (%)")
+p <- p + labs(x = "Well")
+p <- p + theme(text = element_text(size=7))
+p <- p + coord_flip()
+p
+```
+
+* Is there a relationship between quality control and gene?
+```{r}
+control_gene_df = as.data.frame(table(df3$gene, df3$qc))
+display_transpose(control_gene_df, rows)
+```
+
+```{r warning=FALSE}
+fails <- as.data.frame(table(df3$gene, df3$qc))
+fails <- subset(fails, fails$Var2 == 'fail')
+fails$Freq[fails$Var1 == 'INCENP']  <- NA
+fails$Freq[fails$Var1 == 'CDC20']  <- NA
+fails$Freq <- fails$Freq / 8 * 100
+p <- ggplot(fails, aes(x = fails$Var1, y = fails$Freq))
+p <- p + geom_bar(stat="identity")
+p <- p + labs(y = "QC Fail (%)")
+p <- p + labs(x = "Gene")
+p <- p + theme(text = element_text(size=7))
+p <- p + coord_flip()
+p
+```
+
+## Replicate some of the articles figures
+
+The authors postulate, that a gene is considered as being involved in mitotic chromosome condensation, when either its short or its long prophase phenotype showed up in at least two replicates. Extract the 'short' and the 'long' phenotype genes:
+
+```{r}
+dfLongProphase <- subset(df3, df3$repLong > 1)
+longProphaseGenes <-  as.list(as.character(count(dfLongProphase$gene)$x))
+print('Hits with long prophase:')
+paste(longProphaseGenes)
+
+dfShortProphase <- subset(df3, df3$repShort > 1)
+shortProphaseGenes <-  as.list(as.character(count(dfShortProphase$gene)$x))
+print('Hits with short prophase:')
+paste(shortProphaseGenes)
+```
+
+
+Why is SEP15_HUMAN in both lists but it is not in the artice (Table 2)?
+```{r}
+sep15 <- subset(df3, df3$gene == 'SEP15_HUMAN')
+sep15
+summary(sep15)
+```
+(--> It's just been forgotten to add to the table in the article. See also [MitoSys database](http://www.mitosys.org/cgi-bin/mtc?query=SEP15_HUMAN&query_type=genes))
+
+Replicate the Figures 3B and 3C of the paper:
+```{r}
+# Only want to plot the mean of the short prophase scores,
+# remove NAs and aggregate dataset
+data <- subset(df3, !is.na(df3$devShort))
+scores <- aggregate(data$devShort, list(gene = factor(data$gene)), FUN='mean')
+
+# Sort the scores dataframe with respect to the score
+scores <- scores[order(-scores$x),]
+scores$gene <- factor(scores$gene, levels = scores$gene[order(-scores$x)])
+
+# Extract the verified short prohase genes (for marking them in the plot)
+scoresShort <- subset(scores, scores$gene %in% shortProphaseGenes)
+
+p <- ggplot(scores, aes(x = scores$gene, y = scores$x))
+p <- p + geom_bar(stat="identity") 
+p <- p + geom_bar(stat="identity", data = scoresShort, aes(x = scoresShort$gene, y = scoresShort$x), fill = "magenta")
+p <-p  + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+p <- p + labs(y = "Short prophase score")
+p <- p + labs(x = "Gene")
+p <- p + theme(text = element_text(size=7))
+p
+
+display_transpose(scoresShort, 20)
+```
+
+The second plot for the 'long prophase' genes:
+```{r}
+# Only want to plot the mean of the long prophase scores,
+# remove NAs and aggregate dataset
+data <- subset(df3, !is.na(df3$devLong))
+scores <- aggregate(data$devLong, list(gene = factor(data$gene)), FUN='mean')
+
+# Sort the scores dataframe with respect to the score
+scores <- scores[order(-scores$x),]
+scores$gene <- factor(scores$gene, levels = scores$gene[order(-scores$x)])
+
+# Extract the verified long prohase genes (for marking them in the plot)
+scoresLong <- subset(scores, scores$gene %in% longProphaseGenes)
+
+p <- ggplot(scores, aes(x = scores$gene, y = scores$x))
+p <- p + geom_bar(stat="identity") 
+p <- p + geom_bar(stat="identity", data = scoresLong, aes(x = scoresLong$gene, y = scoresLong$x), fill = "magenta")
+p <-p  + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+p <- p + labs(y = "Long prophase score")
+p <- p + labs(x = "Gene")
+p <- p + theme(text = element_text(size=7))
+p
+
+display_transpose(scoresLong, 17)
+```
+
+# Example 3: Plotting thumbnails
+
+## Plot the thumbnails of all images where gene 'SEP15_HUMAN' has been silenced
+
+First define a function for requesting and plotting a single thumbnail:
+```{r}
+plotThumb <- function(df) {
+  wellid <- df[[2]]
+  well <- loadObject(ome, "WellData", wellid)
+  image <- getImages(well, fieldIndex = 0)
+  thumb <- getThumbnail(image)
+  
+  omewell <- well@dataobject
+  omeplate <- omewell$getPlate()
+  label <- paste0(omeplate$getName(), ' [', omewell$getColumn(), ',',omewell$getRow(), ']')
+  
+  plot(0:1, 0:1, type="n",ann=FALSE,axes=FALSE,asp=1)
+  title(label)
+  rasterImage(thumb,0,0,1,1)
+}
+```
+
+Then iterate over the 'SEP15_HUMAN' dataframe and plot the thumbnails:
+```{r fig1, fig.height = 10, fig.width = 10, fig.align = "center"}
+layout(matrix(c(1,2,3,4,5,6,7,8,9), nrow = 3, ncol = 3, byrow = TRUE),
+       widths = c(lcm(4), lcm(4), lcm(4)),
+       heights = c(lcm(4), lcm(4), lcm(4)))
+par(mar=c(1.5,1.5,1.5,1.5))
+apply(sep15, 1, plotThumb)
+```
+
+
+Finally disconnect from the OMERO server again:
+```{r}
+ome <- disconnect(ome)
+```
